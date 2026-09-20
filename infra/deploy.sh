@@ -1,12 +1,5 @@
 #!/usr/bin/env bash
-# Build, push, and deploy the CLD-410 text-analytics Django app to the
-# ECS Fargate service that was provisioned via the AWS CLI (cluster, ALB,
-# target group, security groups, IAM roles, log group -- see the SWDD
-# Section 7 for the full list of resources and their ARNs).
-#
-# Run this from your real Mac terminal (needs Docker Desktop + AWS CLI
-# with your `mcharles` credentials configured). Run it from the
-# cld410-text-analytics/ directory, or set PROJECT_DIR below.
+
 set -euo pipefail
 
 ACCOUNT_ID=638039899567
