@@ -47,17 +47,12 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'textlab.wsgi.application'
 
-# No relational database is required for this assignment: S3 is the system
-# of record for novels/audio, and analysis results are computed at runtime.
 DATABASES = {}
 
 STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# --- Application-specific configuration -----------------------------------
-# S3 bucket created for this assignment: encrypted (SSE-KMS), versioned,
-# public access blocked. See infra/ and the SWDD for the provisioning steps.
 AWS_REGION = os.environ.get('AWS_REGION', 'us-east-1')
 NOVELS_BUCKET = os.environ.get('NOVELS_BUCKET', 'tesu-cld410-text-analytics-mcharlescld-mc-ta')
 RAW_PREFIX = os.environ.get('RAW_PREFIX', 'raw/')
@@ -67,9 +62,6 @@ AUDIO_PREFIX = os.environ.get('AUDIO_PREFIX', 'audio/')
 POLLY_VOICE_ID = os.environ.get('POLLY_VOICE_ID', 'Joanna')
 POLLY_ENGINE = os.environ.get('POLLY_ENGINE', 'neural')
 
-# How many rows of the token/entity frequency tables to render on the
-# dashboard (the full counts are still computed; this only caps the HTML
-# table size so very large novels don't produce an unusably long page).
 MAX_TABLE_ROWS = int(os.environ.get('MAX_TABLE_ROWS', '75'))
 
 LOGGING = {

@@ -295,6 +295,20 @@ Resources:
                 # rather than referenced with !Ref/!GetAtt. Keep this in
                 # sync with the parameter name deploy.sh actually creates.
                 Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cld410-textlab${NameSuffix}/django-secret-key"
+                # Enable Transcribe Actions
+              - Effect: Allow
+                Action:
+                  - transcribe:StartTranscriptionJob
+                  - transcribe:GetTranscriptionJob
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:PutObject
+                Resource:
+                  - !Sub "arn:aws:s3:::${BucketName}${NameSuffix}"
+                  - !Sub "arn:aws:s3:::${BucketName}${NameSuffix}/*"
 
   # ---------------------------------------------------------------------
   # Networking -- ALB + task security groups

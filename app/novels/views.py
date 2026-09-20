@@ -1,20 +1,3 @@
-"""
-Views for the text-analytics dashboard.
-
-The dashboard is the single screen the assignment calls for: on load it
-(1) makes sure every novel in /raw has a corresponding MP3 in /audio,
-converting via Polly for any that don't yet, and (2) computes/display the
-token-frequency and named-entity-frequency tables for every novel, all at
-runtime as the assignment requires (nothing is precomputed offline).
-
-Results are cached per novel (keyed by the novel's S3 key) for the life of
-the container process so repeat page loads don't re-run the full NLTK
-pipeline over multi-hundred-thousand-word novels on every request. This is
-called out as a documented limitation in the SWDD (Section 10): cache is
-in-memory and per-instance, not shared or persisted, which is acceptable
-for a single-task demo deployment but would need a shared store (e.g.
-DynamoDB or ElastiCache) to scale to multiple ECS tasks.
-"""
 import logging
 import time
 
