@@ -1,0 +1,56 @@
+{
+  "family": "cld410-textlab",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::638039899567:role/cld-mc-ta-execution-role",
+  "taskRoleArn": "arn:aws:iam::638039899567:role/cld-mc-ta-task-role",
+  "containerDefinitions": [
+    {
+      "name": "textlab",
+      "image": "__IMAGE_URI__",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "AWS_REGION",
+          "value": "us-east-1"
+        },
+        {
+          "name": "NOVELS_BUCKET",
+          "value": "tesu-cld410-text-analytics-mcharlescld-mc-ta"
+        },
+        {
+          "name": "DJANGO_ALLOWED_HOSTS",
+          "value": "*"
+        },
+        {
+          "name": "DJANGO_DEBUG",
+          "value": "false"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "DJANGO_SECRET_KEY",
+          "valueFrom": "arn:aws:ssm:us-east-1:638039899567:parameter/cld410-textlabcld-mc-ta/django-secret-key"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/cld410-textlabcld-mc-ta",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "textlab"
+        }
+      }
+    }
+  ]
+}

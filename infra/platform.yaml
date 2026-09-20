@@ -1,0 +1,447 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >
+  CLD-410 Text Analytics: encrypted S3 storage, IAM group/role permissions,
+  and the ECS Fargate + ALB platform for the Django app. See the header
+  comments in this file for what is deliberately out of scope and why.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Naming
+        Parameters:
+          - NameSuffix
+      - Label:
+          default: Storage & Encryption
+        Parameters:
+          - BucketName
+          - KmsKeyAliasName
+      - Label:
+          default: IAM (group X)
+        Parameters:
+          - IamGroupName
+          - ExistingIamUserName
+      - Label:
+          default: Networking
+        Parameters:
+          - VpcId
+          - PublicSubnetIds
+      - Label:
+          default: ECS Fargate platform
+        Parameters:
+          - ClusterName
+          - ContainerPort
+          - HealthCheckPath
+
+Parameters:
+  NameSuffix:
+    Type: String
+    Default: cld-mc-ta
+    Description: >
+      Appended (or, for the IAM role/security-group/ALB/target-group names,
+      prefixed) to every resource name/alias below. Defaults to the suffix
+      used by the currently live environment. Change it to deploy a
+      separate, parallel copy of this stack without colliding with the live
+      one.
+
+  BucketName:
+    Type: String
+    Default: tesu-cld410-text-analytics-mcharles
+    Description: Base name of the encrypted S3 bucket that stores /raw and /audio (NameSuffix is appended).
+
+  KmsKeyAliasName:
+    Type: String
+    Default: cld410-text-analytics
+    Description: Base alias (without the "alias/" prefix) for the bucket's customer-managed KMS key (NameSuffix is appended).
+
+  IamGroupName:
+    Type: String
+    Default: TextAnalyticsRW
+    Description: Base name of "group X" -- members can read/write the bucket (NameSuffix is appended).
+
+  ExistingIamUserName:
+    Type: String
+    Default: mcharles
+    Description: >
+      An IAM user that already exists in this account. Added as a member
+      of IamGroupName so they can read/write the bucket.
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Default: vpc-0dbbb3e60c831a9ac
+    Description: VPC that hosts the ALB and the ECS tasks.
+
+  PublicSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Default: "subnet-06c7d870262a6727c,subnet-005c9cc21ff728e40"
+    Description: Public subnets (2+ AZs) for the ALB and the Fargate tasks (assignPublicIp=ENABLED, no NAT).
+
+  ClusterName:
+    Type: String
+    Default: cld410-textlab-cluster
+    Description: Base ECS cluster name (NameSuffix is appended).
+
+  ContainerPort:
+    Type: Number
+    Default: 8000
+    Description: Port the Django container (gunicorn) listens on.
+
+  HealthCheckPath:
+    Type: String
+    Default: /health
+    Description: HTTP path the target group polls to determine task health.
+
+Resources:
+  # ---------------------------------------------------------------------
+  # Encryption + storage
+  # ---------------------------------------------------------------------
+
+  NovelsKmsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub "CMK for CLD-410 text analytics S3 bucket encryption (${NameSuffix})"
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          # Standard default key policy statement: without this, IAM
+          # identity-based policies (like TextAnalyticsAppRuntimePolicy
+          # below) cannot grant kms:Decrypt/GenerateDataKey to anyone.
+          # https://docs.aws.amazon.com/kms/latest/developerguide/key-policies.html#key-policy-default
+          - Sid: EnableIamUserPermissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: "kms:*"
+            Resource: "*"
+      Tags:
+        - Key: Project
+          Value: cld410-text-analytics
+
+  NovelsKmsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub "alias/${KmsKeyAliasName}${NameSuffix}"
+      TargetKeyId: !Ref NovelsKmsKey
+
+  NovelsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${BucketName}${NameSuffix}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !GetAtt NovelsKmsKey.Arn
+            BucketKeyEnabled: true
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: cld410-text-analytics
+    # Note: /raw and /audio are not created here. S3 has no real directory
+    # objects -- these are just key prefixes that appear once the first
+    # novel (.../raw/<title>.txt) or MP3 (.../audio/<title>.mp3) is
+    # uploaded, per the assignment's own workflow.
+
+  NovelsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref NovelsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # Defense-in-depth beyond the CLI baseline: reject any request
+          # to this bucket that isn't over TLS.
+          # https://docs.aws.amazon.com/AmazonS3/latest/userguide/security_iam_service-with-iam.html
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt NovelsBucket.Arn
+              - !Sub "${NovelsBucket.Arn}/*"
+            Condition:
+              Bool:
+                "aws:SecureTransport": "false"
+
+  # ---------------------------------------------------------------------
+  # IAM -- "group X" (human read/write access) and the ECS task roles
+  # ---------------------------------------------------------------------
+
+  TextAnalyticsBucketReadWritePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "TextAnalyticsBucketReadWrite${NameSuffix}"
+      Description: Read/write access to the CLD-410 text analytics S3 bucket and its KMS key.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ListBucketAndLocation
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+              - s3:GetBucketLocation
+            Resource: !GetAtt NovelsBucket.Arn
+          - Sid: ReadWriteObjects
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+            Resource: !Sub "${NovelsBucket.Arn}/*"
+          - Sid: UseKmsKeyForS3Encryption
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey
+            Resource: !GetAtt NovelsKmsKey.Arn
+
+  TextAnalyticsGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: !Sub "${IamGroupName}${NameSuffix}"
+      ManagedPolicyArns:
+        - !Ref TextAnalyticsBucketReadWritePolicy
+
+  TextAnalyticsGroupMembership:
+    Type: AWS::IAM::UserToGroupAddition
+    Properties:
+      GroupName: !Ref TextAnalyticsGroup
+      Users:
+        - !Ref ExistingIamUserName
+
+  TextAnalyticsAppRuntimePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "TextAnalyticsAppRuntime${NameSuffix}"
+      Description: >
+        Runtime permissions for the CLD-410 text analytics ECS task: S3
+        read/write, KMS for the bucket CMK, and Polly synthesis.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ListBucketAndLocation
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+              - s3:GetBucketLocation
+            Resource: !GetAtt NovelsBucket.Arn
+          - Sid: ReadWriteObjects
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+            Resource: !Sub "${NovelsBucket.Arn}/*"
+          - Sid: UseKmsKeyForS3Encryption
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey
+            Resource: !GetAtt NovelsKmsKey.Arn
+          - Sid: PollySynthesis
+            # Amazon Polly is API-only -- there is no bucket/queue/table to
+            # grant access to, just this action. See the STATUS note at the
+            # top of this file.
+            Effect: Allow
+            Action:
+              - polly:SynthesizeSpeech
+            Resource: "*"
+
+  EcsTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${NameSuffix}-task-role"
+      Description: ECS task role for the CLD-410 text analytics Django app.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref TextAnalyticsAppRuntimePolicy
+
+  EcsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${NameSuffix}-execution-role"
+      Description: >
+        ECS execution role for the CLD-410 text analytics Django app
+        (image pull + log driver + reading the Django secret key from SSM).
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: AllowReadDjangoSecretParam
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameters
+                # The parameter itself is created by infra/deploy.sh (see
+                # the STATUS note at the top of this file) -- it does not
+                # exist as a resource in this stack, so the ARN is built
+                # rather than referenced with !Ref/!GetAtt. Keep this in
+                # sync with the parameter name deploy.sh actually creates.
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cld410-textlab${NameSuffix}/django-secret-key"
+
+  # ---------------------------------------------------------------------
+  # Networking -- ALB + task security groups
+  # ---------------------------------------------------------------------
+
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${NameSuffix}-alb-sg"
+      GroupDescription: "ALB SG for CLD-410 text analytics app - allows inbound HTTP from the internet."
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: Public HTTP
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+          Description: All outbound
+
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${NameSuffix}-task-sg"
+      GroupDescription: "ECS task SG for CLD-410 text analytics app."
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          SourceSecurityGroupId: !GetAtt AlbSecurityGroup.GroupId
+          Description: From the ALB only
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+          Description: All outbound (S3, KMS, Polly, ECR, CloudWatch Logs)
+
+  # ---------------------------------------------------------------------
+  # Application Load Balancer
+  # ---------------------------------------------------------------------
+
+  TextAnalyticsAlb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${NameSuffix}-alb"
+      Type: application
+      Scheme: internet-facing
+      IpAddressType: ipv4
+      Subnets: !Ref PublicSubnetIds
+      SecurityGroups:
+        - !GetAtt AlbSecurityGroup.GroupId
+
+  TextAnalyticsTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${NameSuffix}-tg"
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: !Ref ContainerPort
+      TargetType: ip
+      ProtocolVersion: HTTP1
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: !Ref HealthCheckPath
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: "200"
+      # Registered by ECS itself when the Service (created by deploy.sh)
+      # starts a task -- no static Targets here.
+
+  TextAnalyticsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref TextAnalyticsAlb
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TextAnalyticsTargetGroup
+
+  # ---------------------------------------------------------------------
+  # ECS Fargate cluster + logging
+  # ---------------------------------------------------------------------
+
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "${ClusterName}${NameSuffix}"
+      CapacityProviders:
+        - FARGATE
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+
+  EcsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/cld410-textlab${NameSuffix}"
+      RetentionInDays: 90
+
+Outputs:
+  BucketName:
+    Description: Encrypted S3 bucket holding /raw and /audio.
+    Value: !Ref NovelsBucket
+
+  KmsKeyArn:
+    Description: ARN of the customer-managed CMK used for the bucket's default encryption.
+    Value: !GetAtt NovelsKmsKey.Arn
+
+  KmsKeyAlias:
+    Value: !Ref NovelsKmsKeyAlias
+
+  IamGroupName:
+    Description: '"Group X" -- add IAM users here for bucket read/write access.'
+    Value: !Ref TextAnalyticsGroup
+
+  EcsTaskRoleArn:
+    Value: !GetAtt EcsTaskRole.Arn
+
+  EcsExecutionRoleArn:
+    Value: !GetAtt EcsExecutionRole.Arn
+
+  AlbSecurityGroupId:
+    Value: !GetAtt AlbSecurityGroup.GroupId
+
+  TaskSecurityGroupId:
+    Value: !GetAtt TaskSecurityGroup.GroupId
+
+  AlbDnsName:
+    Description: Public URL of the app once deploy.sh creates the ECS service.
+    Value: !GetAtt TextAnalyticsAlb.DNSName
+
+  TargetGroupArn:
+    Description: Pass this to deploy.sh's --load-balancers argument.
+    Value: !Ref TextAnalyticsTargetGroup
+
+  EcsClusterName:
+    Value: !Ref EcsCluster
+
+  LogGroupName:
+    Value: !Ref EcsLogGroup

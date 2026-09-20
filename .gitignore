@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+*.sqlite3
+.DS_Store
+novels/*.txt
+docs
+*.docx
+*.zip
+*.csv

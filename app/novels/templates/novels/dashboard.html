@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CLD-410 Text Analytics Dashboard</title>
+<style>
+  body { font-family: -apple-system, Helvetica, Arial, sans-serif; margin: 2rem; color: #1a1a1a; background: #fafafa; }
+  h1 { margin-bottom: .25rem; }
+  .subtitle { color: #555; margin-top: 0; }
+  .bucket { font-family: monospace; background: #eee; padding: 2px 6px; border-radius: 4px; }
+  .errors { background: #fdecea; border: 1px solid #f5c2c0; padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+  .novel { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 1.25rem 1.5rem; margin-bottom: 1.5rem; }
+  .novel h2 { margin-top: 0; }
+  .status-ok { color: #1a7f37; font-weight: 600; }
+  .status-cached { color: #6e5494; font-weight: 600; }
+  .stats { display: flex; gap: 2rem; flex-wrap: wrap; margin: .75rem 0 1rem; }
+  .stat { background: #f4f6fa; padding: .5rem .9rem; border-radius: 6px; font-size: .9rem; }
+  .stat b { display: block; font-size: 1.2rem; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: .5rem; font-size: .9rem; }
+  th, td { text-align: left; padding: 4px 10px; border-bottom: 1px solid #eee; }
+  th { background: #f0f0f0; position: sticky; top: 0; }
+  .tables { display: flex; gap: 2rem; flex-wrap: wrap; }
+  .table-col { flex: 1; min-width: 280px; max-height: 420px; overflow-y: auto; border: 1px solid #eee; border-radius: 6px; }
+  .table-col h3 { margin: .5rem 0 .25rem 10px; font-size: 1rem; }
+  .note { color: #666; font-size: .85rem; }
+</style>
+</head>
+<body>
+  <h1>CLD-410 Text Analytics Dashboard</h1>
+  <p class="subtitle">
+    Reads novels from <span class="bucket">s3://{{ bucket }}/raw/</span>,
+    converts each to MP3 via AWS Polly into
+    <span class="bucket">s3://{{ bucket }}/audio/</span>, and displays
+    token and named-entity frequency counts &mdash; all computed at runtime.
+  </p>
+
+  {% if errors %}
+  <div class="errors">
+    <strong>Issues:</strong>
+    <ul>
+      {% for e in errors %}<li>{{ e }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <p>{{ novel_count }} novel(s) processed.</p>
+
+  {% for r in results %}
+  <div class="novel">
+    <h2>{{ r.title }}</h2>
+    <p>
+      {% if r.already_converted %}
+        <span class="status-cached">&#9679; MP3 already existed</span>
+      {% else %}
+        <span class="status-ok">&#10003; Converted to MP3 just now</span>
+      {% endif %}
+      &mdash; {{ r.conversion_note }}
+    </p>
+
+    <div class="stats">
+      <div class="stat"><b>{{ r.char_count }}</b>characters</div>
+      <div class="stat"><b>{{ r.token_total }}</b>total tokens</div>
+      <div class="stat"><b>{{ r.unique_token_count }}</b>unique tokens</div>
+      <div class="stat"><b>{{ r.entity_total }}</b>total entity mentions</div>
+      <div class="stat"><b>{{ r.unique_entity_count }}</b>unique entities</div>
+      <div class="stat"><b>{{ r.seconds }}s</b>processing time</div>
+    </div>
+
+    <div class="tables">
+      <div class="table-col">
+        <h3>Tokens &amp; counts</h3>
+        <table>
+          <thead><tr><th>Token</th><th>Count</th></tr></thead>
+          <tbody>
+            {% for token, count in r.top_tokens|slice:":max_table_rows" %}
+            <tr><td>{{ token }}</td><td>{{ count }}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% if r.unique_token_count > max_table_rows %}
+        <p class="note">Showing top {{ max_table_rows }} of {{ r.unique_token_count }} unique tokens, sorted by count.</p>
+        {% endif %}
+      </div>
+
+      <div class="table-col">
+        <h3>Named entities &amp; counts</h3>
+        <table>
+          <thead><tr><th>Entity (type)</th><th>Count</th></tr></thead>
+          <tbody>
+            {% for entity, count in r.top_entities|slice:":max_table_rows" %}
+            <tr><td>{{ entity }}</td><td>{{ count }}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% if r.unique_entity_count > max_table_rows %}
+        <p class="note">Showing top {{ max_table_rows }} of {{ r.unique_entity_count }} unique entities, sorted by count.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</body>
+</html>
