@@ -1,10 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
-Description: >
-  CLD-410 Text Analytics: encrypted S3 storage, IAM group/role permissions,
-  and the ECS Fargate + ALB platform for the Django app. See the header
-  comments in this file for what is deliberately out of scope and why.
-
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
